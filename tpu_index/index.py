@@ -48,10 +48,15 @@ class TPUIndex:
         self.normalized_vectors = normalize
         self.vecs_per_index = vectors.shape[0] // len(self.workers)
 
+<<<<<<< HEAD
         numToAdd = len(self.workers) - (vectors.shape[0] % len(self.workers))
         if not( numToAdd == 0 or numToAdd == 8):
             toAddZeros = np.zeros_like(vectors[-numToAdd:])
             vectors = np.concatenate((vectors, toAddZeros), axis=0)
+=======
+        drop = vectors.shape[0] % len(self.workers)
+        vectors = vectors[:-drop]
+>>>>>>> 1365011... remove vectors attr from TPUIndex class
         vectors = np.split(vectors, len(self.workers), axis=0)
 
         for i in range(len(self.workers)):
