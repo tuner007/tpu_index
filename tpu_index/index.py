@@ -2,6 +2,7 @@ import numpy as np
 import tensorflow as tf
 
 try:
+#     tpu = tf.distribute.cluster_resolver.TPUClusterResolver('srihari-1-tpu')
     tpu = tf.distribute.cluster_resolver.TPUClusterResolver()
     tf.config.experimental_connect_to_cluster(tpu)
     tf.tpu.experimental.initialize_tpu_system(tpu)
@@ -12,11 +13,17 @@ except ValueError:
 
 class Index:
     def __init__(self, vectors, worker):
-        self.vectors = vectors
-        self.embeddings = tf.cast(self.vectors, dtype=tf.bfloat16)
+        self.vectors = tf.cast(vectors, dtype=tf.bfloat16)
         self.worker = worker
         print('Building index with {} vectors on {}'.format(
-            vectors.shape[0], worker))
+            self.vectors.shape[0], worker))
+        
+    def appendEmbeds(self, vectorsN):
+        with tf.device(self.worker):
+            vectorsN = tf.cast(vectorsN, dtype=tf.bfloat16)
+            self.vectors = tf.concat((self.vectors, vectorsN), axis=0)
+            print('Index now has {} vectors on {}'.format(
+                self.vectors.shape[0], self.worker))
 
     @tf.function
     def search(self, query_vector, top_k=20):
@@ -38,21 +45,40 @@ class TPUIndex:
         self.normalized_vectors = False
 
     def create_index(self, vectors, normalize=True):
-        self.vectors = vectors
         self.normalized_vectors = normalize
+        self.vecs_per_index = vectors.shape[0] // len(self.workers)
 
-        drop = self.vectors.shape[0] % len(self.workers)
-        self.vecs_per_index = self.vectors.shape[0] // len(self.workers)
-        self.vectors = self.vectors[:-drop]
-        self.vectors = np.split(self.vectors, len(self.workers), axis=0)
+        numToAdd = len(self.workers) - (vectors.shape[0] % len(self.workers))
+        if not( numToAdd == 0 or numToAdd == 8):
+            toAddZeros = np.zeros_like(vectors[-numToAdd:])
+            vectors = np.concatenate((vectors, toAddZeros), axis=0)
+        vectors = np.split(vectors, len(self.workers), axis=0)
 
         for i in range(len(self.workers)):
             worker = self.workers[i]
             with tf.device(worker):
-                vecs = self.vectors[i]
+                vecs = vectors[i]
                 if self.normalized_vectors:
                     vecs = tf.math.l2_normalize(vecs, axis=1)
                 self.indices[i] = Index(vecs, worker)
+
+    def append_index(self, vectors, normalize=True):
+        self.normalized_vectors = normalize
+        self.vecs_per_index = self.vecs_per_index + (vectors.shape[0] // len(self.workers))
+
+        numToAdd = len(self.workers) - (vectors.shape[0] % len(self.workers))
+        if not( numToAdd == 0 or numToAdd == 8):
+            toAddZeros = tf.zeros_like(vectors[-numToAdd:])
+            vectors = tf.concat((vectors, toAddZeros), axis=0)
+        vectors = np.split(vectors, len(self.workers), axis=0)
+
+        for i in range(len(self.workers)):
+            worker = self.workers[i]
+            with tf.device(worker):
+                vecs = vectors[i]
+                if self.normalized_vectors:
+                    vecs = tf.math.l2_normalize(vecs, axis=1)
+                self.indices[i].appendEmbeds(vecs)
 
     def search(self, xq, distance_metric='cosine', top_k=10):
         dims = xq.shape
